@@ -11,8 +11,8 @@
 const CONFIG = {
   // Supabase project settings → API. Safe for the browser: this is the
   // public anon/publishable key, not the service role key.
-  SUPABASE_URL: "YOUR_SUPABASE_URL",
-  SUPABASE_ANON_KEY: "YOUR_SUPABASE_PUBLISHABLE_KEY",
+  SUPABASE_URL: "https://trgjjtvikddcczkdlzww.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_UCr9X8sIda-cGLqzKOqpiA_2l4pEf1H",
 
   // Name of the deployed Edge Function that performs two-factor login.
   TIME_LOGIN_FUNCTION: "time-login",
