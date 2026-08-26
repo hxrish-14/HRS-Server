@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HRS Server</title>
+<meta name="description" content="Private, login-protected link-management portal." />
+<link rel="icon" href="favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ======================= SESSION-CHECK SCREEN ======================= -->
+<div id="view-checking" class="view view-checking">
+  <div class="checking-box">
+    <span class="spinner-ring" aria-hidden="true"></span>
+    <p>Checking session…</p>
+  </div>
+</div>
+
+<!-- ============================= LOGIN VIEW ============================= -->
+<main id="view-login" class="view view-login" hidden>
+  <div class="login-card">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">H</span>
+      <span class="brand-name">HRS Server</span>
+    </div>
+    <p class="login-sub">Private link portal. Authorized access only.</p>
+
+    <div id="lockout-banner" class="banner banner-warning" hidden>
+      Too many failed attempts. Please try again later.
+    </div>
+
+    <form id="login-form" novalidate>
+      <div class="field">
+        <label for="f-email">Email</label>
+        <input id="f-email" type="email" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="f-password">Password</label>
+        <div class="field-with-toggle">
+          <input id="f-password" type="password" autocomplete="current-password" required />
+          <button type="button" class="icon-btn toggle-visibility" id="toggle-password" aria-label="Show password" aria-pressed="false">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="login-error" class="banner banner-error" role="alert" hidden></div>
+
+      <button type="submit" id="login-submit" class="btn-primary btn-block">
+        <span class="btn-label">Log in</span>
+        <span class="btn-spinner" hidden aria-hidden="true"></span>
+      </button>
+      <button type="button" id="btn-forgot" class="btn-link">Forgot password?</button>
+    </form>
+
+    <form id="reset-form" class="hidden-form" hidden novalidate>
+      <div class="field">
+        <label for="r-email">Email</label>
+        <input id="r-email" type="email" autocomplete="username" required />
+      </div>
+      <div id="reset-message" class="banner banner-info" hidden></div>
+      <button type="submit" class="btn-primary btn-block">Send reset link</button>
+      <button type="button" id="btn-back-to-login" class="btn-link">Back to login</button>
+    </form>
+  </div>
+</main>
+
+<!-- ============================== APP VIEW =============================== -->
+<div id="view-app" class="view view-app" hidden>
+
+  <header class="topbar" id="topbar">
+    <button class="icon-btn sidebar-toggle" id="btn-sidebar-toggle" aria-label="Toggle menu">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+    <div class="brand-lockup brand-lockup--compact">
+      <span class="brand-mark" aria-hidden="true">H</span>
+      <span class="brand-name">HRS Server</span>
+    </div>
+
+    <div class="search-field topbar-search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="M21 21l-4.3-4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="search-input" type="search" placeholder="Search files…" aria-label="Search files" />
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btn-add-file-header" class="btn-secondary btn-small" type="button">+ Add file</button>
+      <button class="icon-btn" id="btn-theme" aria-label="Toggle theme">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 2v2.4M12 19.6V22M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2 12h2.4M19.6 12H22M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <div class="user-menu">
+        <button class="user-chip-btn" id="btn-user-menu">
+          <span id="topbar-avatar" class="avatar avatar-sm">–</span>
+          <span class="user-chip-text"><span id="topbar-name">—</span><span id="topbar-role" class="role-pill">—</span></span>
+        </button>
+        <div class="user-dropdown" id="user-dropdown" hidden>
+          <button id="btn-change-password" type="button">Change password</button>
+          <button id="btn-logout" type="button">Log out</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <nav aria-label="Primary">
+        <button class="side-link is-active" data-view="home" type="button">Home</button>
+        <button class="side-link" data-view="files" type="button">My Files</button>
+        <button class="side-link" data-view="categories" type="button">Categories</button>
+        <button class="side-link admin-only" data-view="users" type="button" hidden>Users</button>
+        <button class="side-link admin-only" data-view="permissions" type="button" hidden>Permissions</button>
+        <button class="side-link admin-only" data-view="activity" type="button" hidden>Activity</button>
+        <button class="side-link admin-only" data-view="security" type="button" hidden>Security</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+
+      <!-- ---- Home ---- -->
+      <section class="screen" id="screen-home">
+        <h1 class="screen-title" id="welcome-title">Welcome back</h1>
+        <div class="stat-grid" id="stat-grid"></div>
+        <h2 class="screen-subtitle">Recent files</h2>
+        <div id="recent-files-grid" class="files-grid"></div>
+      </section>
+
+      <!-- ---- Files ---- -->
+      <section class="screen" id="screen-files" hidden>
+        <div class="toolbar">
+          <select id="category-filter" aria-label="Filter by category"><option value="all">All categories</option></select>
+        </div>
+        <div id="files-state" class="state-block" hidden></div>
+        <div id="files-grid" class="files-grid" aria-live="polite"></div>
+        <div id="files-pagination" class="pagination"></div>
+      </section>
+
+      <!-- ---- Categories ---- -->
+      <section class="screen" id="screen-categories" hidden>
+        <div class="panel">
+          <div class="panel-head"><h2>Categories</h2></div>
+          <form id="category-form" class="inline-form admin-only" hidden>
+            <input id="new-category-name" type="text" placeholder="New category name" required />
+            <button type="submit" class="btn-secondary btn-small">Add</button>
+          </form>
+          <ul id="categories-list" class="admin-list"></ul>
+        </div>
+      </section>
+
+      <!-- ---- Users (admin) ---- -->
+      <section class="screen" id="screen-users" hidden>
+        <div class="toolbar">
+          <h1 class="screen-title">Users</h1>
+          <button id="btn-new-user" class="btn-primary btn-small" type="button">Add user</button>
+        </div>
+        <div id="users-state" class="state-block" hidden></div>
+        <div id="users-grid" class="profile-grid"></div>
+      </section>
+
+      <!-- ---- Permissions (admin) ---- -->
+      <section class="screen" id="screen-permissions" hidden>
+        <div class="panel">
+          <div class="panel-head"><h2>Bulk category access</h2></div>
+          <form id="bulk-access-form" class="field-row">
+            <div class="field"><label for="bulk-category">Category</label><select id="bulk-category" required></select></div>
+            <div class="field"><label for="bulk-user">User</label><select id="bulk-user" required></select></div>
+            <div class="field field-inline modal-actions-right">
+              <button type="submit" data-mode="grant" class="btn-primary btn-small">Grant</button>
+              <button type="submit" data-mode="revoke" class="btn-danger btn-small">Revoke</button>
+            </div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Per-file access</h2></div>
+          <div id="permissions-file-list" class="admin-list"></div>
+        </div>
+      </section>
+
+      <!-- ---- Activity (admin) ---- -->
+      <section class="screen" id="screen-activity" hidden>
+        <h1 class="screen-title">Activity</h1>
+        <ul id="activity-list" class="admin-list"></ul>
+      </section>
+
+      <!-- ---- Security (admin) ---- -->
+      <section class="screen" id="screen-security" hidden>
+        <h1 class="screen-title">Security events</h1>
+
+        <div class="panel">
+          <div class="panel-head"><h2>Identity verification code (optional)</h2></div>
+          <p class="confirm-body">
+            For out-of-band identity confirmation only (e.g. reading a code
+            over a phone call before a manual account change). This is
+            <strong>never</strong> used to log in and is never sent anywhere.
+          </p>
+          <div class="inline-form">
+            <select id="verify-username"></select>
+            <button type="button" id="btn-generate-code" class="btn-secondary btn-small">Generate</button>
+          </div>
+          <div id="verify-code-display" class="verify-code" hidden></div>
+        </div>
+
+        <ul id="security-list" class="admin-list"></ul>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ============================ FILE MODAL =========================== -->
+<div id="modal-file" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-file-title">
+    <div class="modal-head">
+      <h2 id="modal-file-title">Add file link</h2>
+      <button class="icon-btn modal-close" data-close="modal-file" type="button" aria-label="Close">×</button>
+    </div>
+    <form id="file-form" class="modal-body">
+      <input type="hidden" id="ff-id" />
+      <div class="field"><label for="ff-name">File name</label><input id="ff-name" required /></div>
+      <div class="field-row">
+        <div class="field"><label for="ff-category">Category</label><select id="ff-category" required></select></div>
+        <div class="field"><label for="ff-source">Source platform</label>
+          <select id="ff-source" required>
+            <option value="google_drive">Google Drive</option>
+            <option value="mediafire">MediaFire</option>
+            <option value="wetransfer">WeTransfer</option>
+            <option value="telegram">Telegram</option>
+            <option value="other">Other (HTTPS)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="ff-type">File type</label><input id="ff-type" placeholder="pdf, zip, mp4…" /></div>
+        <div class="field"><label for="ff-size">File size</label><input id="ff-size" placeholder="e.g. 240 MB" /></div>
+      </div>
+      <div class="field"><label for="ff-description">Description</label><textarea id="ff-description" rows="2"></textarea></div>
+      <div class="field"><label for="ff-url">File link</label><input id="ff-url" type="url" required placeholder="https://…" /></div>
+      <div class="field field-inline"><label><input id="ff-active" type="checkbox" checked /> Active</label></div>
+
+      <fieldset class="field permissions-fieldset">
+        <legend>Accessible users</legend>
+        <div id="ff-permissions" class="permission-checks"></div>
+      </fieldset>
+
+      <div id="file-form-error" class="banner banner-error" role="alert" hidden></div>
+      <div class="modal-actions">
+        <button type="button" id="ff-delete" class="btn-danger btn-small" hidden>Delete</button>
+        <div class="modal-actions-right">
+          <button type="button" class="btn-ghost btn-small" data-close="modal-file">Cancel</button>
+          <button type="submit" id="ff-save" class="btn-primary btn-small">
+            <span class="btn-label">Save</span><span class="btn-spinner" hidden aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============================ USER MODAL =========================== -->
+<div id="modal-user" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-user-title">
+    <div class="modal-head">
+      <h2 id="modal-user-title">Add user</h2>
+      <button class="icon-btn modal-close" data-close="modal-user" type="button" aria-label="Close">×</button>
+    </div>
+    <form id="user-form" class="modal-body">
+      <input type="hidden" id="uf-id" />
+      <div class="field"><label for="uf-username">Username</label><input id="uf-username" required /></div>
+      <div class="field"><label for="uf-display-name">Display name</label><input id="uf-display-name" required /></div>
+      <div class="field"><label for="uf-email">Email</label><input id="uf-email" type="email" required /></div>
+      <div class="field-row">
+        <div class="field"><label for="uf-role">Role</label>
+          <select id="uf-role" required>
+            <option value="admin">Admin</option><option value="harish">Harish</option>
+            <option value="guest">Guest</option><option value="localadmin">Localadmin</option>
+          </select>
+        </div>
+        <div class="field"><label for="uf-manager">Manager</label><select id="uf-manager"><option value="">None</option></select></div>
+      </div>
+      <div class="field field-inline"><label><input id="uf-active" type="checkbox" checked /> Active</label></div>
+
+      <div id="user-form-error" class="banner banner-error" role="alert" hidden></div>
+      <div class="modal-actions">
+        <button type="button" id="uf-reset-password" class="btn-secondary btn-small" hidden>Send password reset</button>
+        <div class="modal-actions-right">
+          <button type="button" class="btn-ghost btn-small" data-close="modal-user">Cancel</button>
+          <button type="submit" id="uf-save" class="btn-primary btn-small">
+            <span class="btn-label">Save</span><span class="btn-spinner" hidden aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============================ CONFIRM MODAL =========================== -->
+<div id="modal-confirm" class="modal-backdrop" hidden>
+  <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-body">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-body" class="confirm-body"></p>
+      <div id="confirm-error" class="banner banner-error" hidden></div>
+      <div class="modal-actions">
+        <div class="modal-actions-right">
+          <button type="button" class="btn-ghost btn-small" data-close="modal-confirm">Cancel</button>
+          <button type="button" id="confirm-ok" class="btn-danger btn-small">
+            <span class="btn-label">Confirm</span><span class="btn-spinner" hidden aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="inactivity-warning" class="banner banner-warning toast" hidden>Your session will expire soon due to inactivity.</div>
+<div id="offline-banner" class="banner banner-warning toast" hidden>Connection problem. Please check your internet connection.</div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js"></script>
+<script src="app.js" type="module"></script>
+</body>
+</html>
