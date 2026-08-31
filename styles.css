@@ -128,6 +128,7 @@ button { cursor: pointer; }
 .banner-error { background: var(--danger-soft); color: var(--danger); }
 .banner-warning { background: var(--warning-soft); color: var(--warning); }
 .banner-info { background: var(--accent-soft); color: var(--accent); }
+.login-error-detail { font-family: ui-monospace, monospace; font-size: 0.74rem; color: var(--text-muted); margin: -8px 0 var(--space-4); word-break: break-word; }
 
 .btn-primary, .btn-secondary, .btn-ghost, .btn-danger {
   border-radius: var(--radius-sm); font-weight: 600; font-size: 0.9rem; border: 1px solid transparent;
