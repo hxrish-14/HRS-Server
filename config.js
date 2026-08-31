@@ -11,3 +11,4 @@ window.HRS_CONFIG = {
   SUPABASE_ANON_KEY: "sb_publishable_UCr9X8sIda-cGLqzKOqpiA_2l4pEf1H",
   ADMIN_USERS_FUNCTION: "admin-users",
 };
+
