@@ -1,17 +1,23 @@
 // ============================================================================
-// Edge Function: admin-users
+// Edge Function: backup-login
 //
-// Performs privileged Supabase Auth operations that require the service
-// role key: create user, send password reset, disable/enable. Never
-// callable with unchecked privilege — the caller's own access token is
-// verified against the `profiles` table on every request. A modified
-// frontend cannot skip this check; it isn't consulted.
+// A fallback sign-in path. Verifies the identifier/password against the
+// hashed public.backup_logins table (see 004_backup_login.sql), and only
+// on a match, asks Supabase Auth itself to issue a REAL session for that
+// account's email — via a one-time email OTP code generated server-side,
+// never a password Auth ever compares. This runs entirely server-side:
+// the service role key never leaves this function.
 //
-// Actions:
-//   { action: "create",  email, username, display_name, role, manager_id? }
-//   { action: "reset_password", user_id }
-//   { action: "disable", user_id }
-//   { action: "enable",  user_id }
+// Why not just return "ok: true" and let the frontend fake a login?
+// Because every RLS policy in this project checks auth.uid(), which only
+// exists inside a genuine Supabase Auth session — anything less would
+// pass a check here and then see zero data everywhere else.
+//
+// Request:  { identifier, password }
+// Response (success): { email, otp }   — client then calls
+//                       supabase.auth.verifyOtp({ email, token: otp, type: "email" })
+// Response (failure):  { error } with a generic message — never reveals
+//                       which part (identifier vs password) was wrong.
 // ============================================================================
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -29,85 +35,62 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
-const VALID_ROLES = ["admin", "harish", "guest", "localadmin"];
+// Extremely small in-memory rate limiter per isolate — a courtesy layer
+// only, same caveat as elsewhere in this project: not a substitute for
+// platform-level rate limiting, but cheap protection against rapid guessing.
+const attempts = new Map<string, { count: number; resetAt: number }>();
+const MAX_ATTEMPTS = 8;
+const WINDOW_MS = 60_000;
+function rateLimited(key: string): boolean {
+  const now = Date.now();
+  const entry = attempts.get(key);
+  if (!entry || now > entry.resetAt) { attempts.set(key, { count: 1, resetAt: now + WINDOW_MS }); return false; }
+  entry.count += 1;
+  return entry.count > MAX_ATTEMPTS;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const callerToken = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (!callerToken) return json({ error: "Missing authorization" }, 401);
+  let body: { identifier?: string; password?: string };
+  try { body = await req.json(); } catch { return json({ error: "Invalid request body" }, 400); }
+
+  const identifier = (body.identifier ?? "").trim();
+  const password = body.password ?? "";
+  if (!identifier || !password) return json({ error: "Invalid credentials" }, 401);
+
+  const ip = req.headers.get("x-forwarded-for") ?? "unknown";
+  if (rateLimited(`${ip}:${identifier.toLowerCase()}`)) {
+    return json({ error: "Too many attempts. Try again later." }, 429);
+  }
 
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const { data: callerUser, error: callerErr } = await admin.auth.getUser(callerToken);
-  if (callerErr || !callerUser?.user) return json({ error: "Invalid session" }, 401);
-
-  const { data: callerProfile } = await admin
-    .from("profiles").select("role, is_active").eq("id", callerUser.user.id).single();
-
-  if (!callerProfile || callerProfile.role !== "admin" || !callerProfile.is_active) {
-    await admin.from("security_events").insert({
-      user_id: callerUser.user.id, event_type: "unauthorized_access_attempt", severity: "critical",
-      message: "Non-admin attempted to call admin-users", metadata: { function: "admin-users" },
-    });
-    return json({ error: "Not authorized" }, 403);
-  }
-
-  let body: Record<string, unknown>;
-  try { body = await req.json(); } catch { return json({ error: "Invalid request body" }, 400); }
-
   try {
-    switch (body.action) {
-      case "create": {
-        const { email, username, display_name, role, manager_id } = body as Record<string, string>;
-        if (!email || !username || !display_name || !VALID_ROLES.includes(role)) {
-          return json({ error: "Missing or invalid fields" }, 400);
-        }
-        const { data: created, error: createErr } = await admin.auth.admin.createUser({ email, email_confirm: true });
-        if (createErr || !created.user) return json({ error: "Could not create the auth user" }, 400);
-
-        const { error: profileErr } = await admin.from("profiles").insert({
-          id: created.user.id, username, display_name, email, role, manager_id: manager_id || null,
-        });
-        if (profileErr) return json({ error: "Auth user created, but profile insert failed" }, 500);
-
-        await admin.from("activity_log").insert({
-          user_id: callerUser.user.id, event_type: "user_created", metadata: { new_user_id: created.user.id, role },
-        });
-        await admin.auth.resetPasswordForEmail(email);
-        return json({ id: created.user.id });
-      }
-
-      case "reset_password": {
-        const { user_id } = body as Record<string, string>;
-        const { data: target } = await admin.from("profiles").select("email").eq("id", user_id).single();
-        if (!target) return json({ error: "User not found" }, 404);
-        await admin.auth.resetPasswordForEmail(target.email);
-        await admin.from("activity_log").insert({
-          user_id: callerUser.user.id, event_type: "password_reset_requested", metadata: { target_user_id: user_id },
-        });
-        return json({ ok: true });
-      }
-
-      case "disable":
-      case "enable": {
-        const { user_id } = body as Record<string, string>;
-        const isActive = body.action === "enable";
-        const { error: updErr } = await admin.from("profiles").update({ is_active: isActive }).eq("id", user_id);
-        if (updErr) return json({ error: "Could not update user" }, 500);
-        await admin.auth.admin.updateUserById(user_id, { ban_duration: isActive ? "none" : "876000h" });
-        await admin.from("activity_log").insert({
-          user_id: callerUser.user.id, event_type: isActive ? "user_enabled" : "user_disabled",
-          metadata: { target_user_id: user_id },
-        });
-        return json({ ok: true });
-      }
-
-      default:
-        return json({ error: "Unknown action" }, 400);
+    const { data: verifyRows, error: verifyErr } = await admin.rpc("verify_backup_login", {
+      p_identifier: identifier, p_password: password,
+    });
+    if (verifyErr) {
+      console.error("[backup-login] verify_backup_login RPC error:", verifyErr.message);
+      return json({ error: "Backup login is not set up correctly. Run 004_backup_login.sql and set a backup password." }, 500);
     }
-  } catch {
+
+    const result = Array.isArray(verifyRows) ? verifyRows[0] : verifyRows;
+    if (!result?.ok) return json({ error: "Invalid credentials" }, 401);
+
+    const { data: linkData, error: linkErr } = await admin.auth.admin.generateLink({
+      type: "magiclink",
+      email: result.email,
+    });
+    if (linkErr || !linkData?.properties?.email_otp) {
+      console.error("[backup-login] generateLink failed:", linkErr?.message);
+      return json({ error: "Could not issue a session for this account. Check that the email is confirmed in Supabase Auth." }, 500);
+    }
+
+    return json({ email: result.email, otp: linkData.properties.email_otp });
+  } catch (err) {
+    console.error("[backup-login] Unexpected error:", err);
     return json({ error: "Internal error" }, 500);
   }
 });
