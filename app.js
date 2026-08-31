@@ -28,6 +28,10 @@ const CONFIG = {
 // ============================================================
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 const supabase = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+console.log("[HRS] Connecting to Supabase project:", CONFIG.SUPABASE_URL);
+if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_ANON_KEY) {
+  console.error("[HRS] CONFIG.SUPABASE_URL or CONFIG.SUPABASE_ANON_KEY is missing — check that config.js loaded before app.js and window.HRS_CONFIG is set.");
+}
 
 // Wraps any promise so a hung network call can never freeze the UI forever.
 function withTimeout(promise, ms = CONFIG.REQUEST_TIMEOUT_MS) {
@@ -64,7 +68,7 @@ function toCamel(id) { return id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
 function cacheDom() {
   [
     "view-checking", "view-login", "view-app",
-    "login-form", "reset-form", "login-error", "login-submit",
+    "login-form", "reset-form", "login-error", "login-error-detail", "login-submit",
     "f-email", "f-password", "r-email", "reset-message", "btn-forgot", "btn-back-to-login", "lockout-banner",
     "topbar", "sidebar", "btn-sidebar-toggle", "search-input", "btn-add-file-header",
     "btn-theme", "btn-user-menu", "user-dropdown", "topbar-avatar", "topbar-name", "topbar-role",
@@ -232,28 +236,79 @@ function setLoginBusy(busy) {
   el.loginSubmit.querySelector(".btn-spinner").hidden = !busy;
 }
 
+async function resolveLoginEmail(identifier) {
+  // Username login: the identifier may be a username or an email. Try to
+  // resolve a username to its email via a narrow, safe RPC; if that RPC
+  // errors or finds nothing, fall back to treating the input as an email
+  // directly (this preserves plain email login even if the RPC below
+  // hasn't been deployed yet).
+  try {
+    const { data, error } = await withTimeout(supabase.rpc("get_email_for_login", { p_identifier: identifier }));
+    if (!error && data) return data;
+  } catch { /* fall through to raw identifier */ }
+  return identifier;
+}
+
+function describeLoginError(error) {
+  const msg = (error?.message || "").toLowerCase();
+  if (msg.includes("confirm")) {
+    return "This account's email isn't confirmed yet. Ask an admin to confirm it in the Supabase dashboard (Authentication → Users → select the user → Confirm email), or run the SQL fix in 003_fix_login_access.sql.";
+  }
+  if (msg.includes("banned") || msg.includes("disabled")) {
+    return "This account is currently disabled/banned in Supabase Auth.";
+  }
+  if (msg.includes("invalid login credentials") || msg.includes("invalid")) {
+    return "Invalid email/username or password.";
+  }
+  return "Could not log in. Please check your details and try again.";
+}
+
 async function handleLoginSubmit(e) {
   e.preventDefault();
   el.loginError.hidden = true;
+  if (el.loginErrorDetail) el.loginErrorDetail.hidden = true;
   el.lockoutBanner.hidden = true;
-  const email = el.fEmail.value.trim();
+  const identifier = el.fEmail.value.trim();
   const password = el.fPassword.value;
 
   setLoginBusy(true);
   try {
-    const { data: locked } = await withTimeout(supabase.rpc("is_locked_out", { p_email: email }));
+    // The lockout check is a courtesy layer, not the primary defense.
+    // If the RPC itself fails (not deployed yet, transient network issue),
+    // fail OPEN here rather than blocking every login attempt — real
+    // authorization still runs through Supabase Auth + RLS regardless.
+    let locked = false;
+    try {
+      const { data } = await withTimeout(supabase.rpc("is_locked_out", { p_email: identifier }));
+      locked = !!data;
+    } catch (lockErr) {
+      console.warn("[HRS] Lockout check unavailable, continuing without it:", lockErr);
+    }
     if (locked) { el.lockoutBanner.hidden = false; return; }
 
+    const email = await resolveLoginEmail(identifier);
+    console.log("[HRS] Attempting sign-in as:", email, "(typed:", identifier, ")");
+
     const { error } = await withTimeout(supabase.auth.signInWithPassword({ email, password }));
-    await supabase.rpc("record_login_attempt", { p_email: email, p_success: !error }).catch(() => {});
+    supabase.rpc("record_login_attempt", { p_email: identifier, p_success: !error }).catch(() => {});
 
     if (error) {
-      el.loginError.textContent = "Invalid email or password.";
+      // Full detail goes to the console (this is a private admin tool, not
+      // a public signup page, so showing the real Auth error to the person
+      // typing their own credentials is safe and saves a debugging round
+      // trip) — the UI banner still shows a description, not raw internals.
+      console.error("[HRS] Sign-in failed. Raw error:", { message: error.message, status: error.status, name: error.name });
+      el.loginError.textContent = describeLoginError(error);
       el.loginError.hidden = false;
+      if (el.loginErrorDetail) {
+        el.loginErrorDetail.textContent = `Technical detail: "${error.message}" (status ${error.status ?? "n/a"}). Resolved email used: ${email}`;
+        el.loginErrorDetail.hidden = false;
+      }
       return;
     }
     await loadProfile();
   } catch (err) {
+    console.error("[HRS] Login threw an exception:", err);
     el.loginError.textContent = err?.message === "Request timed out"
       ? "The server took too long to respond. Please try again."
       : "Something went wrong. Please try again.";
@@ -276,7 +331,12 @@ async function loadProfile() {
     return showLogin();
   }
 
-  state.profile = profile;
+  // Normalize role once here so every later comparison in this file can
+  // safely use a plain lowercase check — protects against a role value
+  // that was typed/pasted with different casing directly in the database
+  // (e.g. "Admin" instead of "admin"), which would otherwise silently
+  // hide every admin screen even though the account is really an admin.
+  state.profile = { ...profile, role: (profile.role || "").toLowerCase().trim() };
   supabase.from("profiles").update({ last_login_at: new Date().toISOString(), last_seen_at: new Date().toISOString() }).eq("id", user.id).then(() => {});
   loadDashboard();
 }
@@ -798,6 +858,22 @@ function handleGenerateCode() {
 }
 
 // ============================================================
+// UX DETERRENT — right-click disabled on request.
+// IMPORTANT, stated plainly: this is NOT a security control. Anyone can
+// still open DevTools, view source, or read the network tab regardless of
+// this. It only changes a mouse gesture for casual users and cannot stop
+// a motivated one — the app's real protection is entirely the RLS
+// policies in the database, not this. Left off on form fields so people
+// can still use the browser's own copy/paste/spell-check menu there.
+// ============================================================
+function initRightClickDeterrent() {
+  document.addEventListener("contextmenu", (e) => {
+    const isFormField = e.target.closest("input, textarea, select, [contenteditable]");
+    if (!isFormField) e.preventDefault();
+  });
+}
+
+// ============================================================
 // KEYBOARD SHORTCUT
 // Browsers cannot reliably intercept the OS-level Win+Alt+H, so
 // Ctrl+Alt+H is wired as the guaranteed-to-work fallback.
@@ -891,6 +967,7 @@ async function initializeApp() {
   initTheme();
   wireEvents();
   initKeyboardShortcut();
+  initRightClickDeterrent();
   showChecking();
   await initializeAuth();
 }
