@@ -33,8 +33,8 @@
 
     <form id="login-form" novalidate>
       <div class="field">
-        <label for="f-email">Email</label>
-        <input id="f-email" type="email" autocomplete="username" required />
+        <label for="f-email">Email or username</label>
+        <input id="f-email" type="text" autocomplete="username" required />
       </div>
       <div class="field">
         <label for="f-password">Password</label>
@@ -47,6 +47,7 @@
       </div>
 
       <div id="login-error" class="banner banner-error" role="alert" hidden></div>
+      <div id="login-error-detail" class="login-error-detail" hidden></div>
 
       <button type="submit" id="login-submit" class="btn-primary btn-block">
         <span class="btn-label">Log in</span>
