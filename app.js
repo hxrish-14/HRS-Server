@@ -10,6 +10,7 @@ const CONFIG = {
   SUPABASE_URL: CFG.SUPABASE_URL,
   SUPABASE_ANON_KEY: CFG.SUPABASE_ANON_KEY,
   ADMIN_USERS_FUNCTION: CFG.ADMIN_USERS_FUNCTION || "admin-users",
+  BACKUP_LOGIN_FUNCTION: CFG.BACKUP_LOGIN_FUNCTION || "backup-login",
   SEARCH_DEBOUNCE_MS: 250,
   PAGE_SIZE: 12,
   INACTIVITY_LIMIT_MS: 10 * 60 * 1000,
@@ -69,6 +70,7 @@ function cacheDom() {
   [
     "view-checking", "view-login", "view-app",
     "login-form", "reset-form", "login-error", "login-error-detail", "login-submit",
+    "config-error-banner", "btn-backup-login",
     "f-email", "f-password", "r-email", "reset-message", "btn-forgot", "btn-back-to-login", "lockout-banner",
     "topbar", "sidebar", "btn-sidebar-toggle", "search-input", "btn-add-file-header",
     "btn-theme", "btn-user-menu", "user-dropdown", "topbar-avatar", "topbar-name", "topbar-role",
@@ -228,6 +230,43 @@ function toggleTheme() {
 }
 
 // ============================================================
+// CONFIG / CONNECTIVITY SELF-CHECK
+// Runs before anything else touches Supabase. If this fails, the person
+// sees it immediately on screen — not buried in a console they may not
+// know how to open — instead of a confusing "invalid password" later for
+// a problem that was never about the password at all.
+// ============================================================
+function validateConfigShape() {
+  const problems = [];
+  if (!CONFIG.SUPABASE_URL || !/^https:\/\/.+\.supabase\.co\/?$/.test(CONFIG.SUPABASE_URL)) {
+    problems.push("SUPABASE_URL in config.js is missing or doesn't look like a real Supabase project URL.");
+  }
+  if (!CONFIG.SUPABASE_ANON_KEY || CONFIG.SUPABASE_ANON_KEY.length < 20) {
+    problems.push("SUPABASE_ANON_KEY in config.js is missing or looks too short to be real.");
+  }
+  return problems;
+}
+
+async function checkSupabaseReachable() {
+  try {
+    const res = await withTimeout(fetch(`${CONFIG.SUPABASE_URL}/auth/v1/health`, {
+      headers: { apikey: CONFIG.SUPABASE_ANON_KEY },
+    }), 8000);
+    if (!res.ok) return `Supabase responded with an error (HTTP ${res.status}). The project may be paused — check the Supabase dashboard.`;
+    return null;
+  } catch (err) {
+    return `Could not reach ${CONFIG.SUPABASE_URL} at all (${err?.message || "network error"}). Check config.js's SUPABASE_URL, your internet connection, or whether the Supabase project is paused.`;
+  }
+}
+
+function showConfigError(message) {
+  el.configErrorBanner.textContent = message;
+  el.configErrorBanner.hidden = false;
+  el.loginForm.hidden = true;
+  console.error("[HRS] Startup check failed:", message);
+}
+
+// ============================================================
 // AUTHENTICATION
 // ============================================================
 function setLoginBusy(busy) {
@@ -251,16 +290,27 @@ async function resolveLoginEmail(identifier) {
 
 function describeLoginError(error) {
   const msg = (error?.message || "").toLowerCase();
+  const status = error?.status;
+
   if (msg.includes("confirm")) {
-    return "This account's email isn't confirmed yet. Ask an admin to confirm it in the Supabase dashboard (Authentication → Users → select the user → Confirm email), or run the SQL fix in 003_fix_login_access.sql.";
+    return "This account's email isn't confirmed yet. Run PART 2 of 003_fix_login_access.sql, or confirm it manually in Authentication → Users.";
   }
   if (msg.includes("banned") || msg.includes("disabled")) {
-    return "This account is currently disabled/banned in Supabase Auth.";
+    return "This account is banned/disabled in Supabase Auth. Check Authentication → Users, or PART 1 of 003_fix_login_access.sql (banned_until column).";
+  }
+  if (status === 429 || msg.includes("rate limit") || msg.includes("too many")) {
+    return "Supabase is rate-limiting login attempts from this browser right now. Wait a minute and try again.";
+  }
+  if (msg.includes("invalid api key") || msg.includes("invalid apikey")) {
+    return "Supabase rejected the API key in config.js. Double-check SUPABASE_ANON_KEY is copied exactly from Project Settings → API.";
+  }
+  if (msg.includes("user not found")) {
+    return "No account exists for that email. Double-check it, or check PART 1 of 003_fix_login_access.sql for a mismatched profile id.";
   }
   if (msg.includes("invalid login credentials") || msg.includes("invalid")) {
-    return "Invalid email/username or password.";
+    return "Supabase rejected the email/password combination itself — this specific account's stored password doesn't match what was typed. Use \"Forgot password\" to set a fresh one, or try \"Trouble logging in? Try backup login\" below.";
   }
-  return "Could not log in. Please check your details and try again.";
+  return `Could not log in (${error?.message || "unknown reason"}). See the technical detail below.`;
 }
 
 async function handleLoginSubmit(e) {
@@ -309,9 +359,13 @@ async function handleLoginSubmit(e) {
     await loadProfile();
   } catch (err) {
     console.error("[HRS] Login threw an exception:", err);
-    el.loginError.textContent = err?.message === "Request timed out"
-      ? "The server took too long to respond. Please try again."
-      : "Something went wrong. Please try again.";
+    if (err instanceof TypeError || /fetch|network/i.test(err?.message || "")) {
+      el.loginError.textContent = "Network error reaching Supabase. Check your internet connection and that config.js's SUPABASE_URL is correct.";
+    } else if (err?.message === "Request timed out") {
+      el.loginError.textContent = "The server took too long to respond. Please try again.";
+    } else {
+      el.loginError.textContent = `Something went wrong: ${err?.message || "unknown error"}.`;
+    }
     el.loginError.hidden = false;
   } finally {
     setLoginBusy(false);
@@ -349,6 +403,75 @@ async function handleLogout() {
   state.profile = null;
   ModalManager.closeAll();
   showLogin();
+}
+
+// ============================================================
+// BACKUP LOGIN — fallback path. Verifies a separately-set backup
+// password (public.backup_logins, hashed — see 004_backup_login.sql)
+// entirely server-side, then exchanges a one-time email code for a real
+// Supabase Auth session. Requires 004_backup_login.sql to have been run
+// AND a backup password to have been set via set_backup_password() first.
+// ============================================================
+async function handleBackupLoginClick() {
+  el.loginError.hidden = true;
+  if (el.loginErrorDetail) el.loginErrorDetail.hidden = true;
+  const identifier = el.fEmail.value.trim();
+  const password = el.fPassword.value;
+  if (!identifier || !password) {
+    el.loginError.textContent = "Enter your email/username and backup password above first.";
+    el.loginError.hidden = false;
+    return;
+  }
+
+  el.btnBackupLogin.disabled = true;
+  const originalLabel = el.btnBackupLogin.textContent;
+  el.btnBackupLogin.textContent = "Trying backup login…";
+
+  try {
+    const fnUrl = `${CONFIG.SUPABASE_URL}/functions/v1/${CONFIG.BACKUP_LOGIN_FUNCTION}`;
+    const res = await withTimeout(fetch(fnUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: CONFIG.SUPABASE_ANON_KEY },
+      body: JSON.stringify({ identifier, password }),
+    }));
+    const payload = await res.json().catch(() => ({}));
+
+    if (!res.ok || !payload.otp) {
+      console.error("[HRS] Backup login failed:", payload);
+      el.loginError.textContent = payload.error || "Backup login failed.";
+      el.loginError.hidden = false;
+      if (el.loginErrorDetail) {
+        el.loginErrorDetail.textContent = `Technical detail: HTTP ${res.status} — ${payload.error || "no message"}`;
+        el.loginErrorDetail.hidden = false;
+      }
+      return;
+    }
+
+    const { data, error } = await withTimeout(
+      supabase.auth.verifyOtp({ email: payload.email, token: payload.otp, type: "email" })
+    );
+    if (error || !data.session) {
+      console.error("[HRS] verifyOtp failed:", error);
+      el.loginError.textContent = "Backup credentials were correct, but establishing a session failed.";
+      el.loginError.hidden = false;
+      if (el.loginErrorDetail) {
+        el.loginErrorDetail.textContent = `Technical detail: verifyOtp — "${error?.message || "unknown"}". If this persists, your Supabase project may need the OTP verify type adjusted — see the comment in backup-login/index.ts.`;
+        el.loginErrorDetail.hidden = false;
+      }
+      return;
+    }
+
+    await loadProfile();
+  } catch (err) {
+    console.error("[HRS] Backup login threw:", err);
+    el.loginError.textContent = err instanceof TypeError
+      ? "Network error reaching the backup-login function. Check it's deployed (`supabase functions deploy backup-login`)."
+      : "Backup login failed. See console for detail.";
+    el.loginError.hidden = false;
+  } finally {
+    el.btnBackupLogin.disabled = false;
+    el.btnBackupLogin.textContent = originalLabel;
+  }
 }
 
 async function handleResetSubmit(e) {
@@ -906,6 +1029,7 @@ function wireEvents() {
   el.loginForm.addEventListener("submit", handleLoginSubmit);
   el.resetForm.addEventListener("submit", handleResetSubmit);
   el.btnForgot.addEventListener("click", () => { el.loginForm.hidden = true; el.resetForm.hidden = false; });
+  el.btnBackupLogin.addEventListener("click", handleBackupLoginClick);
   el.btnBackToLogin.addEventListener("click", () => { el.resetForm.hidden = true; el.loginForm.hidden = false; });
   $$(".toggle-visibility").forEach((btn) => btn.addEventListener("click", () => {
     const input = btn.previousElementSibling;
@@ -969,6 +1093,20 @@ async function initializeApp() {
   initKeyboardShortcut();
   initRightClickDeterrent();
   showChecking();
+
+  const shapeProblems = validateConfigShape();
+  if (shapeProblems.length) {
+    showLogin();
+    showConfigError(shapeProblems.join(" "));
+    return;
+  }
+  const reachError = await checkSupabaseReachable();
+  if (reachError) {
+    showLogin();
+    showConfigError(reachError);
+    return;
+  }
+
   await initializeAuth();
 }
 async function initializeAuth() {
